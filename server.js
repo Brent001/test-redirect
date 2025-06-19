@@ -27,28 +27,36 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Proxy endpoint for M3U8 playlist parsing
-app.get('/m3u8/*', async (req, res) => {
+// Proxy endpoint for M3U8 playlist parsing (matches your Deno backend)
+app.get('/m3u8-proxy', async (req, res) => {
   try {
-    const targetUrl = req.params[0];
-    const queryParams = req.query;
+    const { url, headers } = req.query;
     
-    console.log(`Requesting M3U8 parsing from Deno backend: ${targetUrl}`);
+    if (!url) {
+      return res.status(400).json({
+        error: 'Missing required parameter',
+        message: 'URL parameter is required'
+      });
+    }
     
-    // Forward M3U8 URL to Deno backend for parsing
-    const response = await axios.get(`${DENO_BACKEND_URL}/parse-m3u8`, {
+    console.log(`Requesting M3U8 proxy from Deno backend for URL: ${url}`);
+    
+    // Forward request to your existing Deno m3u8-proxy endpoint
+    const response = await axios.get(`${DENO_BACKEND_URL}/m3u8-proxy`, {
       params: {
-        url: targetUrl,
-        ...queryParams
+        url: url,
+        headers: headers || '{}' // Default to empty headers if not provided
       },
       headers: {
         'User-Agent': req.get('User-Agent') || 'Railway-Proxy/1.0',
         'Accept': req.get('Accept') || 'application/vnd.apple.mpegurl',
+        'Accept-Language': req.get('Accept-Language') || 'en-US,en;q=0.9',
         'X-Forwarded-For': req.ip,
         'X-Real-IP': req.ip,
         'X-Railway-Proxy': 'true'
       },
-      timeout: 30000
+      timeout: 45000,
+      maxRedirects: 5
     });
 
     // Set appropriate headers for M3U8 content
@@ -56,32 +64,34 @@ app.get('/m3u8/*', async (req, res) => {
       'Content-Type': 'application/vnd.apple.mpegurl',
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
+      'Access-Control-Expose-Headers': 'Content-Length, Content-Type',
       'Cache-Control': 'no-cache, no-store, must-revalidate',
       'Pragma': 'no-cache',
       'Expires': '0'
     });
 
-    // Return the parsed M3U8 playlist
+    // Return the parsed M3U8 playlist from Deno
     res.send(response.data);
     
   } catch (error) {
-    console.error('M3U8 parsing error:', error.message);
+    console.error('M3U8 proxy error:', error.message);
     
     if (error.response) {
       res.status(error.response.status).json({
-        error: 'M3U8 parsing failed',
+        error: 'M3U8 proxy failed',
         status: error.response.status,
-        message: error.response.statusText || 'Failed to parse M3U8 playlist'
+        message: error.response.statusText || 'Failed to proxy M3U8 request',
+        url: req.query.url
       });
     } else if (error.code === 'ECONNABORTED') {
       res.status(408).json({
         error: 'Request timeout',
-        message: 'M3U8 parsing timed out'
+        message: 'M3U8 proxy request timed out'
       });
     } else {
       res.status(500).json({
-        error: 'M3U8 parsing error',
+        error: 'M3U8 proxy error',
         message: error.message
       });
     }
@@ -89,18 +99,24 @@ app.get('/m3u8/*', async (req, res) => {
 });
 
 // Proxy endpoint for TS segments and media files
-app.get('/segment/*', async (req, res) => {
+app.get('/segment', async (req, res) => {
   try {
-    const segmentUrl = req.params[0];
-    const queryParams = req.query;
+    const { url, headers } = req.query;
     
-    console.log(`Requesting TS segment from Deno backend: ${segmentUrl}`);
+    if (!url) {
+      return res.status(400).json({
+        error: 'Missing required parameter',
+        message: 'URL parameter is required'
+      });
+    }
     
-    // Forward segment request to Deno backend
-    const response = await axios.get(`${DENO_BACKEND_URL}/get-segment`, {
+    console.log(`Requesting TS segment from Deno backend: ${url}`);
+    
+    // Forward segment request to Deno backend (assume it has a segment endpoint)
+    const response = await axios.get(`${DENO_BACKEND_URL}/segment`, {
       params: {
-        url: segmentUrl,
-        ...queryParams
+        url: url,
+        headers: headers || '{}'
       },
       headers: {
         'User-Agent': req.get('User-Agent') || 'Railway-Proxy/1.0',
@@ -111,8 +127,9 @@ app.get('/segment/*', async (req, res) => {
         'X-Real-IP': req.ip,
         'X-Railway-Proxy': 'true'
       },
-      timeout: 45000,
-      responseType: 'stream'
+      timeout: 60000,
+      responseType: 'stream',
+      maxRedirects: 5
     });
 
     // Forward response headers
@@ -125,7 +142,7 @@ app.get('/segment/*', async (req, res) => {
       'Content-Type': contentType,
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Range',
+      'Access-Control-Allow-Headers': 'Content-Type, Range, X-Requested-With',
       'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges',
       'Cache-Control': 'public, max-age=3600'
     };
@@ -147,7 +164,8 @@ app.get('/segment/*', async (req, res) => {
       res.status(error.response.status).json({
         error: 'Segment request failed',
         status: error.response.status,
-        message: error.response.statusText || 'Failed to fetch segment'
+        message: error.response.statusText || 'Failed to fetch segment',
+        url: req.query.url
       });
     } else if (error.code === 'ECONNABORTED') {
       res.status(408).json({
